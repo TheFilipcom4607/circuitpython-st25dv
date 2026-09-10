@@ -51,8 +51,10 @@ No wire to the GPO pin is needed for any of that.
 
 ## Install
 
-With [circup](https://github.com/adafruit/circup), which fetches the compiled
-build from this repo's latest release:
+This library is in the
+[CircuitPython Community Bundle](https://github.com/adafruit/CircuitPython_Community_Bundle),
+which [circup](https://github.com/adafruit/circup) reads by default, so
+installing it is one command with nothing to add first:
 
 ```bash
 circup install st25dv
@@ -71,7 +73,12 @@ The release also carries the bundle zips that `circup` reads. You only need
 those if you are working with the bundle format; the bare `.mpy` above is
 extracted from them and is byte-identical to what `circup` installs.
 
-**Prefer the `.mpy`.** The source is 96 kB that CircuitPython must compile into
+The bundle rebuilds nightly, so a fresh release reaches `circup install` a day
+later. `circup bundle-add TheFilipcom4607/circuitpython-st25dv` points `circup`
+straight at this repo's releases, which is how to get a version before the
+bundle picks it up.
+
+**Prefer the `.mpy`.** The source is 98 kB that CircuitPython must compile into
 RAM at every import, where the compiled build is 27 kB and loads with no
 compile step at all. The driver is mostly prose, and every docstring in it
 becomes a string object living in RAM for as long as the module does. On an
@@ -83,7 +90,7 @@ want both, `tools/minify.py` strips the docstrings and comments and changes
 nothing else:
 
 ```bash
-python tools/minify.py st25dv.py st25dv_small.py   # 96 kB -> 58 kB
+python tools/minify.py st25dv.py st25dv_small.py   # 98 kB -> 57 kB
 ```
 
 Either way there are no dependencies. It imports only core modules —
