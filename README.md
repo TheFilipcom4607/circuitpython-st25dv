@@ -473,7 +473,12 @@ or 0xE2.
 * **What a phone does with a credential record is the phone's business.**
   The driver's job ends at correct bytes. Android raises a join dialog for
   Wi-Fi records; iOS does not act on them from a tag, so treat Wi-Fi as an
-  Android feature. Contacts and Bluetooth are handled by both. The `X-HM://`
+  Android feature. Do not confuse this with Wi-Fi **QR codes**, which iOS has
+  read from the Camera app since iOS 11 and which work everywhere. Core NFC
+  reads NDEF and writes it, but Apple never wired a Wi-Fi join into the
+  background tag handler, and encoding the credentials as a `WIFI:S:...;;`
+  URI string instead of the WSC record does not change that. Contacts and
+  Bluetooth are handled by both. The `X-HM://`
   HomeKit payload is written correctly but has nothing behind it to pair with,
   which is a property of NFC HomeKit pairing rather than of this driver.
 * **The credential builders are verified byte for byte, not end to end.**
