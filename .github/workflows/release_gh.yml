@@ -32,3 +32,52 @@ jobs:
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         upload-url: ${{ github.event.release.upload_url }}
+
+  # The Adafruit action only publishes bundle zips, which is what circup wants
+  # but is a poor experience for anyone who just clicks through to the release
+  # page: download, unzip, dig out lib/st25dv.mpy, rename it. This attaches the
+  # bare .mpy alongside them so that is one click.
+  #
+  # The file is extracted from the zips the action just built rather than
+  # compiled again here, so the bytes are identical to what circup installs by
+  # construction, and there is no second mpy-cross toolchain to keep in step.
+  attach-plain-mpy:
+    needs: upload-release-assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Attach the bare .mpy to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          name="${REPO##*/}"
+          for major in 9 10; do
+            zip="${name}-${major}.x-mpy-${TAG}.zip"
+            gh release download "$TAG" --repo "$REPO" -p "$zip" --clobber
+            mkdir -p "m${major}"
+            unzip -q -o -j "$zip" '*/lib/*.mpy' -d "m${major}"
+          done
+          # Both toolchains currently emit mpy v6, so the two builds come out
+          # byte-identical and one unsuffixed file serves either CircuitPython.
+          # That will not stay true forever, so fall back to suffixed files
+          # rather than silently shipping one build under a name covering both.
+          if diff -rq m9 m10 >/dev/null 2>&1; then
+            for f in m9/*.mpy; do
+              echo "9.x and 10.x are identical, attaching $(basename "$f")"
+              gh release upload "$TAG" "$f" --repo "$REPO" --clobber
+            done
+          else
+            echo "9.x and 10.x differ, attaching both with version suffixes"
+            for major in 9 10; do
+              for f in m${major}/*.mpy; do
+                base="$(basename "$f" .mpy)"
+                cp "$f" "${base}-${major}.x.mpy"
+                gh release upload "$TAG" "${base}-${major}.x.mpy" \
+                  --repo "$REPO" --clobber
+              done
+            done
+          fi

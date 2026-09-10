@@ -59,14 +59,18 @@ circup bundle-add TheFilipcom4607/circuitpython-st25dv   # one time
 circup install st25dv
 ```
 
-Or by hand — download `circuitpython-st25dv-<major>.x-mpy-<version>.zip` from
-[the latest release](https://github.com/TheFilipcom4607/circuitpython-st25dv/releases/latest),
-matching the zip's major version to the CircuitPython on your board, and copy
-`lib/st25dv.mpy` out of it:
+Or by hand — download `st25dv.mpy` straight from
+[the latest release](https://github.com/TheFilipcom4607/circuitpython-st25dv/releases/latest)
+and drop it in. No zip, no renaming, and the same file works on CircuitPython
+9.x and 10.x:
 
 ```bash
 cp st25dv.mpy /Volumes/CIRCUITPY/lib/
 ```
+
+The release also carries the bundle zips that `circup` reads. You only need
+those if you are working with the bundle format; the bare `.mpy` above is
+extracted from them and is byte-identical to what `circup` installs.
 
 **Prefer the `.mpy`.** The source is 96 kB that CircuitPython must compile into
 RAM at every import, where the compiled build is 27 kB and loads with no
@@ -640,6 +644,15 @@ circuitpython-st25dv-examples-1.0.0.zip     examples/
 circuitpython-st25dv-1.0.0.json             bundle metadata for circup
 z-build_tools_version-*.ignore              which build-tools cut the release
 ```
+
+A second job then extracts the compiled module from those zips and attaches it
+as a bare `st25dv.mpy`, so the release page offers a file that can be dropped
+into `lib/` without unzipping anything. It is extracted rather than compiled
+again, so it is identical to what `circup` installs by construction. The 9.x
+and 10.x builds are currently byte-identical, both being mpy v6, so one
+unsuffixed file covers either; if they ever diverge the job attaches
+`st25dv-9.x.mpy` and `st25dv-10.x.mpy` instead rather than shipping one build
+under a name that claims both.
 
 Those names are what `circup bundle-add TheFilipcom4607/circuitpython-st25dv`
 expects, and they are derived from the repository name — so the repository has
