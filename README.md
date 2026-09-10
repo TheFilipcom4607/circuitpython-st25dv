@@ -40,24 +40,48 @@ if tag.wait_for_field(timeout=30):     # a phone arrived
 No wire to the GPO pin is needed for any of that.
 
 **Contents:** [Install](#install) · [Examples](#examples) · [Wiring](#wiring) ·
-[Why not Neradoc's](#why-not-neradoccircuitpython-st25dv) · [API](#api) ·
 [NDEF and the capability container](#ndef-and-the-capability-container) ·
-[Hardware notes](#hardware-notes) · [Troubleshooting](#troubleshooting) ·
-[Known limitations](#known-limitations) ·
+[API](#api) · [Hardware notes](#hardware-notes) ·
+[Troubleshooting](#troubleshooting) · [Known limitations](#known-limitations) ·
 [Verified on hardware](#verified-on-hardware) ·
-[Tests and tooling](#tests-and-tooling) · [License](#license-and-credits)
+[Tests and tooling](#tests-and-tooling) · [Releasing](#releasing) ·
+[License](#license-and-credits)
 
 ## Install
 
-Copy `st25dv.py` to `CIRCUITPY/lib/`. There are no dependencies beyond
-CircuitPython core modules: `micropython`, `supervisor`, `time`, and
-`digitalio` only if you pass a GPO pin.
-
-On a memory-tight board, compile it first:
+With [circup](https://github.com/adafruit/circup), which fetches the compiled
+build from this repo's latest release:
 
 ```bash
-mpy-cross st25dv.py && cp st25dv.mpy /Volumes/CIRCUITPY/lib/
+circup bundle-add TheFilipcom4607/circuitpython-st25dv   # one time
+circup install st25dv
 ```
+
+Or by hand — download `circuitpython-st25dv-<major>.x-mpy-<version>.zip` from
+[the latest release](https://github.com/TheFilipcom4607/circuitpython-st25dv/releases/latest),
+matching the zip's major version to the CircuitPython on your board, and copy
+`lib/st25dv.mpy` out of it:
+
+```bash
+cp st25dv.mpy /Volumes/CIRCUITPY/lib/
+```
+
+Copying `st25dv.py` from this repo instead works and is the easiest thing to
+edit in place, but prefer the `.mpy` on a RAM-tight board: the source is 75 kB
+that CircuitPython has to compile into RAM at import, and the driver is mostly
+prose — every docstring in it becomes a string object that lives there for as
+long as the module does. `tools/minify.py` strips those if you would rather
+keep the source, which is the middle option:
+
+```bash
+python tools/minify.py st25dv.py st25dv_small.py
+```
+
+Either way there are no dependencies. It imports only core modules —
+`micropython`, `supervisor`, `time`, and `digitalio` only if you pass a GPO
+pin — and notably not `adafruit_bus_device`, so there is nothing to install
+alongside it. Compiled builds are published for CircuitPython 9.x and 10.x;
+the source runs on either.
 
 ## Examples
 
@@ -102,29 +126,40 @@ tag.gpo_enabled = True                 # the bit that actually drives the pin
 print(tag.gpo_value)
 ```
 
-## Why not Neradoc/circuitpython-st25dv
+## NDEF and the capability container
 
-[The only other CircuitPython attempt](https://github.com/Neradoc/circuitpython-st25dv)
-is a 2 kB experiment that subclasses `adafruit_24lc32`'s EEPROM class. It
-hardcodes the size at 2048 bytes, only ever talks to 0x53, and has no access to
-the system area, the capability container, the security session, the dynamic
-registers, GPO or the mailbox. It treats an ST25DV as a plain I2C EEPROM.
+This comes before the API reference because it is what actually bites. A tag
+that reads as empty, or that a phone refuses to write more than a few hundred
+bytes to, is almost always a capability container problem rather than a driver
+one.
 
-The differences that matter are not features so much as correctness:
+A phone reads the capability container at user memory offset 0 first. It is 4
+bytes when `MLEN` fits in one byte and 8 bytes otherwise, which the third byte
+being zero announces. `MLEN` counts 8-byte units.
 
-* **Both device addresses.** 0x53 is user memory, the dynamic registers and the
-  mailbox; 0x57 is the system area and the password. Half the chip is invisible
-  from 0x53 alone.
-* **NACK is not an error.** When the RF side is busy the I2C side answers NoAck
-  to everything (section 5.5). Every transfer here retries with backoff before
-  it is allowed to raise, so a phone touching the tag does not turn into an
-  exception in your program.
-* **Size is read, not assumed.** `IC_REF` is 0x26 on both the 16K and the 64K,
-  so capacity comes from `MEM_SIZE` and `BLK_SIZE`.
-* **Area boundaries.** A sequential write may not cross one, and a sequential
-  read that does returns 0xFF from there on. The chunker splits on them.
-* **The mailbox blocks writes.** EEPROM writes transit the fast transfer mode
-  buffer, so with it enabled they are silently refused. Checked, and named.
+| Part | Memory | Container | Encoded |
+|---|---|---|---|
+| ST25DV04K | 512 B | 4 bytes, MLEN 63 | `e1 40 3f 05` |
+| ST25DV16K | 2048 B | 8 bytes, MLEN 255 | `e2 40 00 05 00 00 00 ff` |
+| ST25DV64K | 8192 B | 8 bytes, MLEN 1023 | `e2 40 00 05 00 00 03 ff` |
+
+The short form is used whenever its one-byte `MLEN` can still describe the
+whole tag. At 2048 bytes it cannot, which is why the 16K gets the extended
+form.
+
+**The Adafruit 4701 ships with `e1 40 40 05`**, declaring 512 bytes, followed by
+an NDEF URI record for its own product page. If the fitted part is a 16K, that
+container under-declares the tag by a factor of four and a phone will refuse to
+write past 512 bytes. `tag.format()` writes a correct one;
+`tag.format(erase=False)` fixes it and carries the existing message across,
+which matters because the corrected container is 8 bytes rather than 4 and so
+moves the NDEF area. Adafruit's own product text describes the board as
+carrying an ST25DV04 while the product name says 16K, so run
+`examples/read_tag.py` and let `MEM_SIZE` settle it.
+
+Byte 3 of the container is the Type 5 feature flags. The driver treats it as
+opaque and carries forward whatever the tag already had, defaulting to the 0x05
+the board ships with.
 
 ## API
 
@@ -134,10 +169,14 @@ The differences that matter are not features so much as correctness:
 addresses are separate arguments because they are two device select codes for
 one chip, not two chips. `debug=True` prints every transfer in both directions.
 `busy_timeout` is how long a NACKed transfer keeps retrying before raising
-`BusyError`. `probe=False` skips the identity read at construction.
+`BusyError`, and also how long a transfer waits for the bus lock when something
+else on a shared bus is holding it. `probe=False` skips the identity read at
+construction.
 
 Also `ST25DV.from_board(board)`, which uses `STEMMA_I2C` or `I2C`, and
-`ST25DV.from_pins(scl, sda, frequency=400000)`.
+`ST25DV.from_pins(scl, sda, frequency=400000)`. The bus `from_pins` builds
+belongs to the object it returns, so `deinit()` releases it; a bus handed to
+the constructor is the caller's and is left alone.
 
 ### Identity
 
@@ -265,7 +304,7 @@ Everything derives from `ST25DVError`.
 | | |
 |---|---|
 | `NotFoundError` | nothing answered, or what answered is not an ST25DV |
-| `BusyError` | NACKed for longer than `busy_timeout`. Usually a reader |
+| `BusyError` | NACKed, or the bus lock was held, past `busy_timeout`. Usually a reader |
 | `SessionRequired` | a system register needs the session open |
 | `ProtectedError` | the chip refused a write its protection settings forbid |
 | `NDEFError` | malformed NDEF or capability container, or a message too big |
@@ -275,35 +314,6 @@ Everything derives from `ST25DVError`.
 When a write exhausts its retries the driver asks the chip why before giving
 up, so a protected write, a closed session, an enabled mailbox and a busy
 reader come back as four different exceptions rather than one.
-
-## NDEF and the capability container
-
-A phone reads the capability container at user memory offset 0 first. It is 4
-bytes when `MLEN` fits in one byte and 8 bytes otherwise, which the third byte
-being zero announces. `MLEN` counts 8-byte units.
-
-| Part | Memory | Container | Encoded |
-|---|---|---|---|
-| ST25DV04K | 512 B | 4 bytes, MLEN 63 | `e1 40 3f 05` |
-| ST25DV16K | 2048 B | 8 bytes, MLEN 255 | `e2 40 00 05 00 00 00 ff` |
-| ST25DV64K | 8192 B | 8 bytes, MLEN 1023 | `e2 40 00 05 00 00 03 ff` |
-
-The short form is used whenever its one-byte `MLEN` can still describe the
-whole tag. At 2048 bytes it cannot, which is why the 16K gets the extended
-form.
-
-**The Adafruit 4701 ships with `e1 40 40 05`**, declaring 512 bytes, followed by
-an NDEF URI record for its own product page. If the fitted part is a 16K, that
-container under-declares the tag by a factor of four and a phone will refuse to
-write past 512 bytes. `tag.format()` writes a correct one; `tag.format(erase=False)`
-fixes it and carries the existing message across, which matters because the
-corrected container is 8 bytes rather than 4 and so moves the NDEF area. Adafruit's own product text
-describes the board as carrying an ST25DV04 while the product name says 16K, so
-run `examples/read_tag.py` and let `MEM_SIZE` settle it.
-
-Byte 3 of the container is the Type 5 feature flags. The driver treats it as
-opaque and carries forward whatever the tag already had, defaulting to the 0x05
-the board ships with.
 
 ## Hardware notes
 
@@ -413,7 +423,7 @@ Steps 3 and 4 need a person with a phone. The rest are automatable.
 ## Tests and tooling
 
 ```bash
-python -m pytest -q                          # 120 tests against a simulated chip
+python -m pytest -q                          # 134 tests against a simulated chip
 python tools/run_on_board.py test_st25dv.py  # the same logic, on CircuitPython
 python tools/minify.py st25dv.py small.py     # strip docstrings for tight boards
 ```
@@ -429,6 +439,49 @@ provoke on real silicon are the easy ones to test here.
 `tests/stubs/` supplies the CircuitPython-only modules so the driver imports
 under CPython. `tests/test_device_suite.py` runs the on-device suite on the
 host, so CI fails if the board suite would.
+
+## Releasing
+
+`.github/workflows/release_gh.yml` builds the bundle zips and attaches them to
+a published GitHub release, using Adafruit's `circuitpython-build-tools`. The
+tag is the only source of truth for the version: `__version__` in `st25dv.py`
+and `version` in `pyproject.toml` both read `0.0.0+auto.0` in a checkout, and
+the build rewrites that literal to the tag.
+
+To cut a release, push a plain semver tag — no `v` prefix, because `circup`
+parses the tag as a version — then publish a GitHub release for it. The tag
+alone does nothing; the workflow fires on the release being *published*:
+
+```bash
+git tag 1.0.0 && git push origin 1.0.0
+```
+
+The workflow then attaches six assets:
+
+```
+circuitpython-st25dv-py-1.0.0.zip           source, lib/st25dv.py
+circuitpython-st25dv-9.x-mpy-1.0.0.zip      compiled for CircuitPython 9.x
+circuitpython-st25dv-10.x-mpy-1.0.0.zip     compiled for CircuitPython 10.x
+circuitpython-st25dv-examples-1.0.0.zip     examples/
+circuitpython-st25dv-1.0.0.json             bundle metadata for circup
+z-build_tools_version-*.ignore              which build-tools cut the release
+```
+
+Those names are what `circup bundle-add TheFilipcom4607/circuitpython-st25dv`
+expects, and they are derived from the repository name — so the repository has
+to be called `circuitpython-st25dv`, matching `pyproject.toml` and the badges
+above, and renaming it later breaks `circup` until the next release.
+
+`requirements.txt` must exist at the repo root even though the driver has no
+dependencies: Adafruit's `actions-ci/install.sh` runs `pip install -r
+requirements.txt` with no existence check, and the build dies at that step
+without it.
+
+Two more things to know. GitHub runs release-triggered workflows from the copy
+of the file on the default branch, so the workflow has to be on `main` before a
+release will build anything. And a release build checks out the *tag*, not
+`main`, so a fix to the build itself only takes effect in a new tag — re-running
+a failed job against an old tag just rebuilds the old tree.
 
 ## License and credits
 
