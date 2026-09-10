@@ -1,7 +1,7 @@
-# Packaging metadata. Installing on a board is still "copy st25dv.py to
-# CIRCUITPY/lib/" -- this file exists so the module can be built and published
-# (a prerequisite for the CircuitPython Community Bundle) and so the host-side
-# test suite can be run from a checkout.
+# Packaging metadata. Installing on a board is `circup install st25dv`, or
+# copying st25dv.mpy from a release zip; this file is what lets the release
+# workflow build those, and what the CircuitPython Community Bundle reads to
+# find the module. It also lets the host-side test suite run from a checkout.
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"

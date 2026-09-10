@@ -68,12 +68,16 @@ matching the zip's major version to the CircuitPython on your board, and copy
 cp st25dv.mpy /Volumes/CIRCUITPY/lib/
 ```
 
-Copying `st25dv.py` from this repo instead works and is the easiest thing to
-edit in place, but prefer the `.mpy` on a RAM-tight board: the source is 96 kB
-that CircuitPython has to compile into RAM at import, and the driver is mostly
-prose — every docstring in it becomes a string object that lives there for as
-long as the module does. `tools/minify.py` strips those if you would rather
-keep the source, which is the middle option:
+**Prefer the `.mpy`.** The source is 96 kB that CircuitPython must compile into
+RAM at every import, where the compiled build is 27 kB and loads with no
+compile step at all. The driver is mostly prose, and every docstring in it
+becomes a string object living in RAM for as long as the module does. On an
+RP2040 that difference decides whether the driver and a large `code.py` fit
+together.
+
+Copy `st25dv.py` instead only when you want to read or edit it in place. If you
+want both, `tools/minify.py` strips the docstrings and comments and changes
+nothing else:
 
 ```bash
 python tools/minify.py st25dv.py st25dv_small.py   # 96 kB -> 58 kB
