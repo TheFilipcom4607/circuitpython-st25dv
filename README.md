@@ -396,29 +396,63 @@ or 0xE2.
 
 ## Verified on hardware
 
-**Nothing yet.** The board was not reachable from the machine this was written
-on: no CIRCUITPY drive and no USB serial port were present. Everything below
-runs green against the simulated chip in `tests/fake_st25dv.py` and under the
-on-device suite executed on the host, which is not the same as running on
-silicon.
+**Steps 1 and 2, on an Adafruit Feather RP2350 running CircuitPython 10.3.0.**
+The read-only paths are confirmed on silicon; nothing has yet written to the
+tag over I2C or been read by a phone, and the RF side is entirely unexercised.
 
-The checklist, in the order to work through it:
+The part is an **ST25DV16K-IE**, 2048 bytes, settled from `MEM_SIZE` rather
+than from `IC_REF`, which reads 0x26 on the 16K and the 64K alike. The board
+under test had already been formatted and written, so these are not factory
+values:
 
-1. **Probe, read only.** `python tools/run_on_board.py examples/read_tag.py --until done`.
-   Settles 4K versus 16K from `MEM_SIZE`, and prints the factory system-area
-   bytes. Save that output: there is no reset command.
-2. **On-device suite.** `python tools/run_on_board.py test_st25dv.py`. Catches
-   the constructs CPython accepts and CircuitPython does not.
+```
+part          ST25DV16K-IE
+memory        2048 bytes (512 blocks of 4)
+uid           e0:02:26:01:d9:71:91:69
+ic_ref        0x26        ic_revision  0x13
+areas         (<Area 1 0x0000..0x07ff (2048 bytes)>,)
+field / vcc   False / True
+session open  False
+
+system area, 0x0000 to 0x0020
+  0000  88 03 01 00 00 3f 00 3f
+  0008  00 3f 00 00 00 00 07 00
+  0010  00 00 00 00 ff 01 03 26
+  0018  69 91 71 d9 01 26 02 e0
+  0020  13
+
+capability container  <CapabilityContainer v1.0 2040 bytes at offset 8>
+  raw                 e2 40 00 05 00 00 00 ff
+ndef                  uri: 'https://thefilip.com'
+```
+
+What that run establishes, beyond the chip answering at all: `MEM_SIZE` and
+`BLK_SIZE` decode to the right capacity; the UID comes back least significant
+byte first and reverses to the `e0:02` an ST tag should show; UID byte 5 reads
+0x26, so the package variant is correctly called -IE; all three `ENDAi` sit at
+0x3f, which is end of memory on a 2048-byte part, and the driver reports the
+single factory area that implies; and the **extended** 8-byte capability
+container parses, with the NDEF message found at offset 8 and its URI prefix
+code expanded. The extended form is the one the 16K needs and the one a 4-byte
+container would get wrong.
+
+The on-device suite then ran **89 assertions, 0 failures**, on the firmware
+rather than on the host. That is the check that CPython cannot stand in for.
+
+Still to do, in order:
+
 3. **Phone reads it.** `examples/write_url.py --until wrote`, then tap an Android phone.
    Then a message over 255 bytes, to exercise the three-byte TLV length, and
    one over 512 bytes, to check the container fix.
 4. **Phone writes it.** `examples/phone_writes_back.py`, write from the phone,
    confirm `wait_for_rf_write` fires and the board reads it back.
 5. **Mailbox.** `examples/mailbox_echo.py`, host-side put and get.
-6. **Restore.** Put the factory register values back and rewrite the
-   adafruit.com URL, so the board ends where it started.
+6. **Restore.** Put the register values back and rewrite the URL, so the board
+   ends where it started.
 
-Steps 3 and 4 need a person with a phone. The rest are automatable.
+Steps 3 and 4 need a person with a phone. Step 5 is automatable. Note that all
+four write to the tag, and there is no reset command — keep the system-area
+dump above.
 
 ## Tests and tooling
 
