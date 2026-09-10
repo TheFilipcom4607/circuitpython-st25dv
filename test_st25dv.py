@@ -278,5 +278,74 @@ check("second area starts after the first", tag.read_areas()[1].start, 1024)
 tag.set_areas([2048])
 check("merged back", len(tag.read_areas()), 1)
 
+print("--- credential records ---")
+# These lean on dicts, string methods and byte building that CPython is more
+# forgiving about than the firmware, which is the whole reason they run here.
+rec = NDEFRecord.tel("+441632960961")
+check("tel prefix code", rec.payload[0], 5)
+check("tel value", rec.value, "tel:+441632960961")
+check("tel scheme not doubled", NDEFRecord.tel("tel:+1").value, "tel:+1")
+check("sms body encoded", NDEFRecord.sms("+1", "on my way!").value,
+      "sms:+1?body=on%20my%20way%21")
+
+wifi = NDEFRecord.wifi("Guest Wi-Fi", "correct horse")
+check("wifi kind", wifi.kind, "wifi")
+check("wifi mime", bytes(wifi.type), b"application/vnd.wfa.wsc")
+decoded = wifi.value
+check("wifi ssid", decoded["ssid"], "Guest Wi-Fi")
+check("wifi password", decoded["password"], "correct horse")
+check("wifi security", decoded["security"], "wpa2")
+check("wifi utf8 ssid", NDEFRecord.wifi("caf\u00e9", "hunter22").value["ssid"],
+      "caf\u00e9")
+check("open network", NDEFRecord.wifi("Cafe").value["security"], "open")
+check_raises("open network takes no password",
+             lambda: NDEFRecord.wifi("Cafe", "x" * 8,
+                                     authentication=st25dv.WIFI_OPEN),
+             NDEFError)
+check_raises("ssid must fit", lambda: NDEFRecord.wifi("x" * 33, "hunter22"),
+             NDEFError)
+
+card = NDEFRecord.contact("Grace Hopper", phone="+441632960961",
+                          email="grace@example.com", organization="US Navy")
+check("contact kind", card.kind, "contact")
+check("contact name", card.value["name"], "Grace Hopper")
+check("contact phone", card.value["phone"], ["+441632960961"])
+check("contact org", card.value["organization"], "US Navy")
+check("surname split", "N:Hopper;Grace;;;" in card.value["text"], True)
+
+bt = NDEFRecord.bluetooth("a4:c1:38:01:02:03", name="Speaker")
+check("bd_addr little endian", bytes(bt.payload[2:8]),
+      b"\x03\x02\x01\x38\xc1\xa4")
+check("bt length counts itself", bt.payload[0] | (bt.payload[1] << 8),
+      len(bt.payload))
+check("bt address read back", bt.value["address"], "a4:c1:38:01:02:03")
+check("bt name", bt.value["name"], "Speaker")
+ble = NDEFRecord.bluetooth_le("a4:c1:38:01:02:03", address_type=1,
+                              role=st25dv.BLE_CENTRAL_ONLY)
+check("ble kind", ble.kind, "bluetooth_le")
+check("ble address type", ble.value["address_type"], "random")
+check("ble role", ble.value["role"], "central")
+check("address without separators", NDEFRecord.bluetooth("a4c138010203")
+      .value["address"], "a4:c1:38:01:02:03")
+check_raises("short address refused",
+             lambda: NDEFRecord.bluetooth("a4:c1:38"), NDEFError)
+
+check("homekit scheme added", NDEFRecord.homekit("0024K0M6P00HB").value,
+      "X-HM://0024K0M6P00HB")
+
+combined = NDEFMessage([NDEFRecord.uri("https://example.com"),
+                        NDEFRecord.wifi("Guest", "hunter22")])
+round_tripped = NDEFMessage.from_bytes(combined.to_bytes())
+check("two records survive encoding", len(round_tripped), 2)
+check("first() finds the uri", round_tripped.first("uri"),
+      "https://example.com")
+check("wifi accessor", round_tripped.wifi["ssid"], "Guest")
+check("missing kind is none", round_tripped.first("contact"), None)
+
+tag.ndef = "tel:+441632960961"
+check("tel string stored as uri", tag.ndef.uri, "tel:+441632960961")
+tag.ndef = "Note: buy milk"
+check("prose with a colon stays text", tag.ndef.text, "Note: buy milk")
+
 print()
 print("%d passed, %d failed" % (passed, failed))

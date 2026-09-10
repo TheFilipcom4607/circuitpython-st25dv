@@ -27,10 +27,27 @@ def test_text_round_trip(tag):
 
 
 def test_string_with_scheme_becomes_a_uri_record(tag):
+    """A scheme the prefix table knows is enough; "://" is not required.
+
+    This used to turn on "://" alone, which made `mailto:` and `tel:` prose.
+    """
     tag.ndef = "mailto:someone@example.com"
-    assert tag.ndef.records[0].kind == "text"      # no "://", so text
+    assert tag.ndef.records[0].kind == "uri"
+    assert tag.ndef.uri == "mailto:someone@example.com"
+    tag.ndef = "tel:+441632960961"
+    assert tag.ndef.uri == "tel:+441632960961"
+    tag.ndef = "sms:+441632960961"
+    assert tag.ndef.records[0].kind == "uri"
     tag.ndef = "tel://12345"
     assert tag.ndef.records[0].kind == "uri"
+
+
+def test_prose_that_merely_contains_a_colon_is_still_text(tag):
+    """The reason the check is a prefix table and not "is there a colon"."""
+    for prose in ("Note: buy milk", "Warning: hot", "12:30 tomorrow"):
+        tag.ndef = prose
+        assert tag.ndef.records[0].kind == "text", prose
+        assert tag.ndef.text == prose
 
 
 @pytest.mark.parametrize("uri,code", [

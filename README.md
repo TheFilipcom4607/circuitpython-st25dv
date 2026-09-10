@@ -5,7 +5,9 @@
 
 A single-file CircuitPython driver for the ST **ST25DV** dual-interface NFC
 tag, with NDEF, the Type 5 capability container, the I2C security session,
-memory areas, GPO configuration and the fast transfer mode mailbox. Written
+memory areas, GPO configuration and the fast transfer mode mailbox. Writes
+links, phone numbers, Wi-Fi credentials, contact cards and Bluetooth pairing
+data, and decodes all of them back. Written
 against the [Adafruit ST25DV16K breakout (4701)](https://www.adafruit.com/product/4701),
 but nothing in it is board specific. Covers the 4K, 16K and 64K parts, because
 it reads the memory size from the chip rather than assuming one.
@@ -67,14 +69,14 @@ cp st25dv.mpy /Volumes/CIRCUITPY/lib/
 ```
 
 Copying `st25dv.py` from this repo instead works and is the easiest thing to
-edit in place, but prefer the `.mpy` on a RAM-tight board: the source is 75 kB
+edit in place, but prefer the `.mpy` on a RAM-tight board: the source is 96 kB
 that CircuitPython has to compile into RAM at import, and the driver is mostly
 prose — every docstring in it becomes a string object that lives there for as
 long as the module does. `tools/minify.py` strips those if you would rather
 keep the source, which is the middle option:
 
 ```bash
-python tools/minify.py st25dv.py st25dv_small.py
+python tools/minify.py st25dv.py st25dv_small.py   # 96 kB -> 58 kB
 ```
 
 Either way there are no dependencies. It imports only core modules —
@@ -89,6 +91,7 @@ the source runs on either.
 |---|---|
 | [`examples/read_tag.py`](examples/read_tag.py) | dumps identity, system area, capability container and NDEF. Read only. Run this first |
 | [`examples/write_url.py`](examples/write_url.py) | writes a URL, fixes the capability container, then waits for a tap |
+| [`examples/write_credentials.py`](examples/write_credentials.py) | phone number, Wi-Fi, contact, Bluetooth and HomeKit records, written and decoded |
 | [`examples/tap_detector.py`](examples/tap_detector.py) | polls the interrupt register and reports field changes and RF writes |
 | [`examples/phone_writes_back.py`](examples/phone_writes_back.py) | phone writes a message, the board notices and reads it out |
 | [`examples/eeprom_dump.py`](examples/eeprom_dump.py) | hex dump of user memory, the system area and the dynamic registers |
@@ -222,6 +225,73 @@ tag.capability_container
 [circuitpython-pn7150](https://github.com/TheFilipcom4607/circuitpython-pn7150),
 including all 36 URI prefix codes. `read_ndef()` and `write_ndef(msg)` are the
 same thing spelled out.
+
+A plain string becomes a URI record when it starts with a scheme the prefix
+table knows, and a text record otherwise, so `"tel:+441632960961"` is a URI
+while `"Note: buy milk"` stays prose.
+
+### More than a URL
+
+A tag is not limited to links. These build the records phones already know what
+to do with, and reading one back decodes it in the same terms.
+
+```python
+tag.ndef = NDEFRecord.tel("+441632960961")            # opens the dialler
+tag.ndef = NDEFRecord.sms("+441632960961", "on my way")
+tag.ndef = NDEFRecord.wifi("Guest Wi-Fi", "correct horse")
+tag.ndef = NDEFRecord.contact("Grace Hopper", phone="+441632960961",
+                              email="grace@example.com")
+tag.ndef = NDEFRecord.bluetooth("a4:c1:38:01:02:03", name="Speaker")
+tag.ndef = NDEFRecord.bluetooth_le("a4:c1:38:01:02:03", name="Sensor")
+tag.ndef = NDEFRecord.homekit("X-HM://0024K0M6P00HB")
+```
+
+| Builder | Record written | What a phone does with it |
+|---|---|---|
+| `tel(number)` | URI, prefix code 5 | offers to call |
+| `sms(number, body)` | URI, body percent-encoded | opens the composer, prefilled |
+| `wifi(ssid, password, ...)` | MIME `application/vnd.wfa.wsc` | Android offers to join |
+| `contact(name, phone=, email=, ...)` | MIME `text/vcard`, vCard 3.0 | offers to save the contact |
+| `bluetooth(address, name=)` | MIME `application/vnd.bluetooth.ep.oob` | offers to pair, BR/EDR |
+| `bluetooth_le(address, ...)` | MIME `application/vnd.bluetooth.le.oob` | offers to pair, LE |
+| `homekit(payload)` | URI, `X-HM://` | see the caveat below |
+
+Reading is symmetric. `record.kind` grows the values `"wifi"`, `"contact"`,
+`"bluetooth"` and `"bluetooth_le"`, and `record.value` decodes each into a
+dict instead of raw bytes:
+
+```python
+credentials = tag.ndef.wifi
+# {"ssid": "Guest Wi-Fi", "password": "correct horse", "security": "wpa2",
+#  "authentication": 32, "encryption": 8, "mac": None}
+
+tag.ndef.contact["name"]               # "Grace Hopper"
+tag.ndef.first("bluetooth")["address"] # "a4:c1:38:01:02:03"
+```
+
+`message.first(kind)` is the general form; `message.uri`, `.text`, `.wifi` and
+`.contact` are shortcuts for the common ones. A message can hold several
+records, so a URL and Wi-Fi credentials can share one tag:
+
+```python
+tag.ndef = NDEFMessage([NDEFRecord.uri("https://thefilip.com"),
+                        NDEFRecord.wifi("Guest Wi-Fi", "correct horse")])
+```
+
+Wi-Fi defaults to WPA2 Personal with AES when a password is given, which is
+what nearly every home network is. Pass `authentication=WIFI_OPEN` for an open
+one; naming a secured type with no password is refused rather than quietly
+written as open. Bluetooth addresses are given the way people write them, most
+significant byte first, and are reversed on the wire where the format wants
+them little-endian.
+
+**HomeKit is the one to be careful with.** `homekit()` writes the `X-HM://`
+setup payload, the same string printed under the QR code on an accessory, as a
+URI record. That is all it does. It does not make the tag a HomeKit accessory:
+iOS pairs with a device that answers back, and a tag holding a setup payload
+has nothing behind it. Useful for carrying a setup code that a real accessory
+will honour, not as a substitute for one. This is the only builder here whose
+end-to-end behaviour is unverified.
 
 ### Security session
 
@@ -390,6 +460,16 @@ or 0xE2.
   through `RF_PWD_3` have no I2C access at all (Table 59), so they can be
   neither set nor verified from this side. `RFAiSS` is readable and reported,
   but its effect cannot be tested without an RF reader that presents passwords.
+* **What a phone does with a credential record is the phone's business.**
+  The driver's job ends at correct bytes. Android raises a join dialog for
+  Wi-Fi records; iOS does not act on them from a tag, so treat Wi-Fi as an
+  Android feature. Contacts and Bluetooth are handled by both. The `X-HM://`
+  HomeKit payload is written correctly but has nothing behind it to pair with,
+  which is a property of NFC HomeKit pairing rather than of this driver.
+* **The credential builders are verified byte for byte, not end to end.**
+  Every record is checked against its own format's rules and read back through
+  the same decoder a tag's contents go through, on the host and on the
+  firmware. None has yet been put in front of a phone.
 * **`LOCK_CCFILE` and `LOCK_CFG` are one-way from the RF side.** The driver
   will happily set them. Setting `lock_ccfile` blocks RF writes to blocks 0 and
   1 permanently.
@@ -436,8 +516,14 @@ container parses, with the NDEF message found at offset 8 and its URI prefix
 code expanded. The extended form is the one the 16K needs and the one a 4-byte
 container would get wrong.
 
-The on-device suite then ran **89 assertions, 0 failures**, on the firmware
-rather than on the host. That is the check that CPython cannot stand in for.
+The on-device suite then ran **123 assertions, 0 failures**, on the firmware
+rather than on the host. That is the check that CPython cannot stand in for,
+and it covers the credential builders too: the dict handling, string methods
+and byte assembly they need all work on CircuitPython 10.3.0.
+
+What that run does **not** cover is a phone. Every record type above is
+verified as bytes, on both the host and the firmware, and none has been put in
+front of a handset.
 
 Still to do, in order:
 
@@ -457,7 +543,7 @@ dump above.
 ## Tests and tooling
 
 ```bash
-python -m pytest -q                          # 134 tests against a simulated chip
+python -m pytest -q                          # 180 tests against a simulated chip
 python tools/run_on_board.py test_st25dv.py  # the same logic, on CircuitPython
 python tools/minify.py st25dv.py small.py     # strip docstrings for tight boards
 ```

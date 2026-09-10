@@ -286,6 +286,368 @@ _URI_PREFIXES = (
 )
 
 
+# ------------------------------------------------------- credential payloads
+
+#: MIME types a phone dispatches on. They have to be exact: Android matches
+#: them literally when it decides which system dialog to raise.
+MIME_WIFI = "application/vnd.wfa.wsc"
+MIME_BLUETOOTH = "application/vnd.bluetooth.ep.oob"
+MIME_BLUETOOTH_LE = "application/vnd.bluetooth.le.oob"
+MIME_VCARD = "text/vcard"
+
+#: A HomeKit setup payload is an Apple URI scheme, the same string printed
+#: under the QR code on an accessory. See :meth:`NDEFRecord.homekit`.
+HOMEKIT_SCHEME = "X-HM://"
+
+_UNRESERVED = ("ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+               "abcdefghijklmnopqrstuvwxyz0123456789-_.~")
+
+
+def _percent_encode(text):
+    out = ""
+    for byte in text.encode("utf-8"):
+        char = chr(byte)
+        out += char if char in _UNRESERVED else "%%%02X" % byte
+    return out
+
+
+def _be16(value):
+    return bytes([(value >> 8) & 0xFF, value & 0xFF])
+
+
+def _as_list(value):
+    """One string, an iterable of them, or nothing, as a tuple."""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    return tuple(value)
+
+
+def _mac_bytes(mac, reverse=False):
+    """``"a4:c1:38:01:02:03"``, ``"a4c1380102 03"`` or six raw bytes.
+
+    ``reverse`` gives the little-endian order Bluetooth puts a BD_ADDR in,
+    built with an explicit loop because CircuitPython does not take ``[::-1]``
+    on every buffer type.
+    """
+    if isinstance(mac, str):
+        text = ""
+        for char in mac:
+            if char not in ":-. ":
+                text += char
+        if len(text) != 12:
+            raise NDEFError("a MAC address is six bytes, got %r" % mac)
+        raw = bytearray(6)
+        for i in range(6):
+            try:
+                raw[i] = int(text[2 * i:2 * i + 2], 16)
+            except ValueError:
+                raise NDEFError("a MAC address is hexadecimal, got %r" % mac)
+    else:
+        raw = bytearray(mac)
+        if len(raw) != 6:
+            raise NDEFError("a MAC address is six bytes, got %d" % len(raw))
+    if not reverse:
+        return bytes(raw)
+    out = bytearray(6)
+    for i in range(6):
+        out[5 - i] = raw[i]
+    return bytes(out)
+
+
+def _mac_hex(raw, reverse=False):
+    """Six bytes back to ``"a4:c1:38:01:02:03"``."""
+    if not reverse:
+        return hexlify(raw)
+    out = bytearray(6)
+    for i in range(6):
+        out[5 - i] = raw[i]
+    return hexlify(out)
+
+
+# -- Wi-Fi Simple Configuration ---------------------------------------------
+# The payload is a flat run of big-endian TLVs, two bytes of type and two of
+# length, with a single Credential TLV wrapping the network's own fields.
+
+_WSC_CREDENTIAL = const(0x100E)
+_WSC_AUTH_TYPE = const(0x1003)
+_WSC_ENCRYPT_TYPE = const(0x100F)
+_WSC_MAC_ADDRESS = const(0x1020)
+_WSC_NETWORK_INDEX = const(0x1026)
+_WSC_NETWORK_KEY = const(0x1027)
+_WSC_SSID = const(0x1045)
+
+#: Authentication types.
+WIFI_OPEN = const(0x0001)
+WIFI_WPA_PSK = const(0x0002)
+WIFI_SHARED = const(0x0004)
+WIFI_WPA_EAP = const(0x0008)
+WIFI_WPA2_EAP = const(0x0010)
+WIFI_WPA2_PSK = const(0x0020)
+WIFI_WPA_WPA2_PSK = const(0x0022)
+
+#: Encryption types.
+WIFI_ENC_NONE = const(0x0001)
+WIFI_ENC_WEP = const(0x0002)
+WIFI_ENC_TKIP = const(0x0004)
+WIFI_ENC_AES = const(0x0008)
+WIFI_ENC_AES_TKIP = const(0x000C)
+
+_WIFI_SECURITY_NAMES = {
+    WIFI_OPEN: "open",
+    WIFI_WPA_PSK: "wpa",
+    WIFI_SHARED: "wep-shared",
+    WIFI_WPA_EAP: "wpa-enterprise",
+    WIFI_WPA2_EAP: "wpa2-enterprise",
+    WIFI_WPA2_PSK: "wpa2",
+    WIFI_WPA_WPA2_PSK: "wpa/wpa2",
+}
+
+
+def _wsc_tlv(kind, value):
+    value = bytes(value)
+    return _be16(kind) + _be16(len(value)) + value
+
+
+def _wsc_walk(data):
+    """``(type, value)`` per TLV, stopping at the first one that runs off."""
+    out = []
+    data = bytes(data)
+    i = 0
+    while i + 4 <= len(data):
+        kind = (data[i] << 8) | data[i + 1]
+        length = (data[i + 2] << 8) | data[i + 3]
+        i += 4
+        if i + length > len(data):
+            break
+        out.append((kind, data[i:i + length]))
+        i += length
+    return out
+
+
+def _wifi_payload(ssid, password="", authentication=None, encryption=None,
+                  mac=None, network_index=1):
+    ssid = ssid.encode("utf-8") if isinstance(ssid, str) else bytes(ssid)
+    key = password.encode("utf-8") if isinstance(password, str) \
+        else bytes(password)
+    if not 1 <= len(ssid) <= 32:
+        raise NDEFError("an SSID is 1 to 32 bytes, got %d" % len(ssid))
+    if authentication is None:
+        authentication = WIFI_WPA2_PSK if key else WIFI_OPEN
+    if encryption is None:
+        encryption = WIFI_ENC_AES if key else WIFI_ENC_NONE
+    if authentication == WIFI_OPEN and key:
+        raise NDEFError("an open network takes no password")
+    if authentication != WIFI_OPEN and not key:
+        raise NDEFError("a secured network needs a password; pass "
+                        "authentication=WIFI_OPEN for an open one")
+    # 8 to 63 for a passphrase, exactly 64 for a hex PSK.
+    if key and not 8 <= len(key) <= 64:
+        raise NDEFError("a WPA key is 8 to 63 characters, or 64 hex digits; "
+                        "got %d" % len(key))
+    body = _wsc_tlv(_WSC_NETWORK_INDEX, bytes([network_index & 0xFF]))
+    body += _wsc_tlv(_WSC_SSID, ssid)
+    body += _wsc_tlv(_WSC_AUTH_TYPE, _be16(authentication))
+    body += _wsc_tlv(_WSC_ENCRYPT_TYPE, _be16(encryption))
+    body += _wsc_tlv(_WSC_NETWORK_KEY, key)
+    if mac is not None:
+        body += _wsc_tlv(_WSC_MAC_ADDRESS, _mac_bytes(mac))
+    return _wsc_tlv(_WSC_CREDENTIAL, body)
+
+
+def _wifi_decode(payload):
+    out = {"ssid": None, "password": "", "authentication": None,
+           "encryption": None, "mac": None, "security": "unknown"}
+    for kind, value in _wsc_walk(payload):
+        if kind != _WSC_CREDENTIAL:
+            continue
+        for inner, data in _wsc_walk(value):
+            if inner == _WSC_SSID:
+                out["ssid"] = _to_str(data)
+            elif inner == _WSC_NETWORK_KEY:
+                out["password"] = _to_str(data)
+            elif inner == _WSC_AUTH_TYPE and len(data) >= 2:
+                out["authentication"] = (data[0] << 8) | data[1]
+            elif inner == _WSC_ENCRYPT_TYPE and len(data) >= 2:
+                out["encryption"] = (data[0] << 8) | data[1]
+            elif inner == _WSC_MAC_ADDRESS and len(data) == 6:
+                out["mac"] = _mac_hex(data)
+        break
+    if out["ssid"] is None:
+        raise NDEFError("no Wi-Fi credential in this record: no SSID field "
+                        "inside a Credential TLV")
+    out["security"] = _WIFI_SECURITY_NAMES.get(out["authentication"],
+                                               "unknown")
+    return out
+
+
+# -- Bluetooth out-of-band pairing ------------------------------------------
+# BR/EDR carries a length and a BD_ADDR then EIR structures; Low Energy is
+# EIR structures alone, with the address as one of them.
+
+_EIR_SHORT_NAME = const(0x08)
+_EIR_COMPLETE_NAME = const(0x09)
+_EIR_CLASS_OF_DEVICE = const(0x0D)
+_EIR_LE_APPEARANCE = const(0x19)
+_EIR_LE_DEVICE_ADDRESS = const(0x1B)
+_EIR_LE_ROLE = const(0x1C)
+
+#: LE roles.
+BLE_PERIPHERAL_ONLY = const(0x00)
+BLE_CENTRAL_ONLY = const(0x01)
+BLE_PERIPHERAL_PREFERRED = const(0x02)
+BLE_CENTRAL_PREFERRED = const(0x03)
+
+_BLE_ROLE_NAMES = ("peripheral", "central", "peripheral-preferred",
+                   "central-preferred")
+
+
+def _eir(kind, value):
+    """One EIR/AD structure: a length covering type and value, then both."""
+    value = bytes(value)
+    return bytes([len(value) + 1, kind & 0xFF]) + value
+
+
+def _eir_walk(data):
+    out = []
+    data = bytes(data)
+    i = 0
+    while i < len(data):
+        length = data[i]
+        if length == 0 or i + 1 + length > len(data):
+            break
+        out.append((data[i + 1], data[i + 2:i + 1 + length]))
+        i += 1 + length
+    return out
+
+
+def _bluetooth_payload(address, name=None, class_of_device=None):
+    body = b""
+    if name is not None:
+        body += _eir(_EIR_COMPLETE_NAME, name.encode("utf-8"))
+    if class_of_device is not None:
+        body += _eir(_EIR_CLASS_OF_DEVICE,
+                     bytes([class_of_device & 0xFF,
+                            (class_of_device >> 8) & 0xFF,
+                            (class_of_device >> 16) & 0xFF]))
+    addr = _mac_bytes(address, reverse=True)
+    total = len(addr) + len(body) + 2          # the two length bytes count
+    return bytes([total & 0xFF, (total >> 8) & 0xFF]) + addr + body
+
+
+def _bluetooth_le_payload(address, address_type=0, role=BLE_PERIPHERAL_ONLY,
+                          name=None, appearance=None):
+    addr = _mac_bytes(address, reverse=True)
+    body = _eir(_EIR_LE_DEVICE_ADDRESS, addr + bytes([address_type & 0x01]))
+    body += _eir(_EIR_LE_ROLE, bytes([role & 0xFF]))
+    if name is not None:
+        body += _eir(_EIR_COMPLETE_NAME, name.encode("utf-8"))
+    if appearance is not None:
+        body += _eir(_EIR_LE_APPEARANCE,
+                     bytes([appearance & 0xFF, (appearance >> 8) & 0xFF]))
+    return body
+
+
+def _bluetooth_decode(payload, low_energy):
+    payload = bytes(payload)
+    out = {"address": None, "name": None, "low_energy": bool(low_energy),
+           "address_type": None, "role": None, "class_of_device": None}
+    if low_energy:
+        structures = _eir_walk(payload)
+    else:
+        if len(payload) < 8:
+            raise NDEFError("a Bluetooth OOB record is at least 8 bytes, "
+                            "got %d" % len(payload))
+        out["address"] = _mac_hex(payload[2:8], reverse=True)
+        structures = _eir_walk(payload[8:])
+    for kind, value in structures:
+        if kind in (_EIR_COMPLETE_NAME, _EIR_SHORT_NAME):
+            out["name"] = _to_str(value)
+        elif kind == _EIR_CLASS_OF_DEVICE and len(value) == 3:
+            out["class_of_device"] = (value[0] | (value[1] << 8)
+                                      | (value[2] << 16))
+        elif kind == _EIR_LE_DEVICE_ADDRESS and len(value) == 7:
+            out["address"] = _mac_hex(value[:6], reverse=True)
+            out["address_type"] = "random" if value[6] & 0x01 else "public"
+        elif kind == _EIR_LE_ROLE and value:
+            out["role"] = _BLE_ROLE_NAMES[value[0]] \
+                if value[0] < len(_BLE_ROLE_NAMES) else value[0]
+    if out["address"] is None:
+        raise NDEFError("no Bluetooth device address in this record")
+    return out
+
+
+# -- vCard ------------------------------------------------------------------
+
+
+def _vcard_escape(value):
+    out = ""
+    for char in value:
+        if char in "\\,;":
+            out += "\\" + char
+        elif char == "\n":
+            out += "\\n"
+        elif char != "\r":
+            out += char
+    return out
+
+
+def _vcard_payload(name=None, phone=None, email=None, first=None, last=None,
+                   organization=None, title=None, url=None, address=None,
+                   note=None):
+    if first is None and last is None and name:
+        cut = name.rfind(" ")
+        first, last = (name[:cut], name[cut + 1:]) if cut > 0 else (name, "")
+    first = first or ""
+    last = last or ""
+    if not name:
+        name = (first + " " + last).strip()
+    if not name:
+        raise NDEFError("a contact needs a name, or a first or last name")
+    lines = ["BEGIN:VCARD", "VERSION:3.0",
+             "N:%s;%s;;;" % (_vcard_escape(last), _vcard_escape(first)),
+             "FN:%s" % _vcard_escape(name)]
+    for number in _as_list(phone):
+        lines.append("TEL;TYPE=CELL:%s" % _vcard_escape(number))
+    for one in _as_list(email):
+        lines.append("EMAIL;TYPE=INTERNET:%s" % _vcard_escape(one))
+    if organization:
+        lines.append("ORG:%s" % _vcard_escape(organization))
+    if title:
+        lines.append("TITLE:%s" % _vcard_escape(title))
+    if url:
+        lines.append("URL:%s" % _vcard_escape(url))
+    if address:
+        lines.append("ADR;TYPE=HOME:;;%s" % _vcard_escape(address))
+    if note:
+        lines.append("NOTE:%s" % _vcard_escape(note))
+    lines.append("END:VCARD")
+    return ("\r\n".join(lines) + "\r\n").encode("utf-8")
+
+
+def _vcard_decode(payload):
+    text = _to_str(payload)
+    out = {"text": text, "name": None, "phone": [], "email": [],
+           "organization": None}
+    for line in text.replace("\r\n", "\n").split("\n"):
+        parts = line.split(":", 1)
+        if len(parts) != 2:
+            continue
+        key = parts[0].split(";")[0].upper()
+        value = parts[1]
+        if key == "FN":
+            out["name"] = value
+        elif key == "TEL":
+            out["phone"].append(value)
+        elif key == "EMAIL":
+            out["email"].append(value)
+        elif key == "ORG":
+            out["organization"] = value
+    return out
+
+
+
 class NDEFRecord:
     """A single NDEF record.
 
@@ -307,6 +669,15 @@ class NDEFRecord:
         if self.tnf == TNF_WELL_KNOWN and self.type == b"T":
             return "text"
         if self.tnf == TNF_MIME:
+            mime = _to_str(self.type).lower()
+            if mime == MIME_WIFI:
+                return "wifi"
+            if mime == MIME_BLUETOOTH:
+                return "bluetooth"
+            if mime == MIME_BLUETOOTH_LE:
+                return "bluetooth_le"
+            if mime in (MIME_VCARD, "text/x-vcard"):
+                return "contact"
             return "mime"
         if self.tnf == TNF_ABSOLUTE_URI:
             return "uri"
@@ -331,6 +702,14 @@ class NDEFRecord:
                 return ""
             lang_len = self.payload[0] & 0x3F
             return _to_str(self.payload[1 + lang_len:])
+        if kind == "wifi":
+            return _wifi_decode(self.payload)
+        if kind == "bluetooth":
+            return _bluetooth_decode(self.payload, False)
+        if kind == "bluetooth_le":
+            return _bluetooth_decode(self.payload, True)
+        if kind == "contact":
+            return _vcard_decode(self.payload)
         return self.payload
 
     @property
@@ -417,6 +796,99 @@ class NDEFRecord:
         """
         return cls(TNF_EXTERNAL, type_name.encode("utf-8"), bytes(data))
 
+    # -- credentials -----------------------------------------------------
+
+    @classmethod
+    def tel(cls, number):
+        """A phone number, as the ``tel:`` URI a dialler acts on.
+
+        The scheme is added if it is missing, and ``tel:`` is prefix code 5 in
+        the URI table, so the record costs one byte more than the digits.
+        """
+        number = str(number).strip()
+        if not number.startswith("tel:"):
+            number = "tel:" + number
+        return cls.uri(number)
+
+    @classmethod
+    def sms(cls, number, message=""):
+        """A prefilled text message: opens the composer, addressed and typed.
+
+        The body is percent-encoded, so spaces and punctuation survive.
+        """
+        number = str(number).strip()
+        if number.startswith("sms:"):
+            number = number[4:]
+        uri = "sms:" + number
+        if message:
+            uri += "?body=" + _percent_encode(message)
+        return cls.uri(uri)
+
+    @classmethod
+    def wifi(cls, ssid, password="", authentication=None, encryption=None,
+             mac=None, network_index=1):
+        """Wi-Fi credentials, in the Wi-Fi Simple Configuration format.
+
+        Android offers to join the network straight from the tap. With a
+        password and nothing else said, the network is taken to be WPA2
+        Personal with AES, which is what almost every home network is; pass
+        ``authentication=WIFI_OPEN`` for an open one. iOS does not act on these
+        from a tag, so treat it as an Android feature.
+        """
+        return cls(TNF_MIME, MIME_WIFI.encode("utf-8"),
+                   _wifi_payload(ssid, password, authentication, encryption,
+                                 mac, network_index))
+
+    @classmethod
+    def contact(cls, name=None, phone=None, email=None, first=None, last=None,
+                organization=None, title=None, url=None, address=None,
+                note=None):
+        """A contact card, as vCard 3.0, which both phones offer to save.
+
+        ``name`` is split on the last space when ``first`` and ``last`` are not
+        given. ``phone`` and ``email`` each take one string or several.
+        """
+        return cls(TNF_MIME, MIME_VCARD.encode("utf-8"),
+                   _vcard_payload(name, phone, email, first, last,
+                                  organization, title, url, address, note))
+
+    @classmethod
+    def bluetooth(cls, address, name=None, class_of_device=None):
+        """Bluetooth BR/EDR pairing data (Secure Simple Pairing out of band).
+
+        ``address`` is the device address the way it is normally written,
+        most significant byte first; it goes on the wire reversed.
+        """
+        return cls(TNF_MIME, MIME_BLUETOOTH.encode("utf-8"),
+                   _bluetooth_payload(address, name, class_of_device))
+
+    @classmethod
+    def bluetooth_le(cls, address, address_type=0, role=BLE_PERIPHERAL_ONLY,
+                     name=None, appearance=None):
+        """Bluetooth Low Energy pairing data.
+
+        ``address_type`` is 0 for a public address and 1 for a random one.
+        """
+        return cls(TNF_MIME, MIME_BLUETOOTH_LE.encode("utf-8"),
+                   _bluetooth_le_payload(address, address_type, role, name,
+                                         appearance))
+
+    @classmethod
+    def homekit(cls, setup_payload):
+        """A HomeKit setup payload, as its ``X-HM://`` URI.
+
+        This is the string printed under the QR code on an accessory, and this
+        writes it verbatim. It does **not** turn the tag into a HomeKit
+        accessory: iOS pairs with a device that answers, and a tag holding a
+        setup payload has nothing behind it to pair with. Useful for carrying a
+        setup code that a real accessory will honour, not as a substitute for
+        one. See the README.
+        """
+        text = str(setup_payload)
+        if not text.startswith(HOMEKIT_SCHEME):
+            text = HOMEKIT_SCHEME + text.lstrip("/")
+        return cls.uri(text)
+
 
 class NDEFMessage:
     """A list of :class:`NDEFRecord`, with shortcuts for the common case."""
@@ -438,21 +910,37 @@ class NDEFMessage:
         """Decoded value of the first record, or ``None`` if empty."""
         return self.records[0].value if self.records else None
 
-    @property
-    def uri(self):
-        """First URI record's value, or ``None``."""
+    def first(self, kind):
+        """The decoded value of the first record of ``kind``, or ``None``.
+
+        ``kind`` is whatever :attr:`NDEFRecord.kind` reports: ``"uri"``,
+        ``"text"``, ``"wifi"``, ``"contact"``, ``"bluetooth"``,
+        ``"bluetooth_le"``, ``"mime"``, ``"external"`` or ``"unknown"``.
+        """
         for rec in self.records:
-            if rec.kind == "uri":
+            if rec.kind == kind:
                 return rec.value
         return None
 
     @property
+    def uri(self):
+        """First URI record's value, or ``None``."""
+        return self.first("uri")
+
+    @property
     def text(self):
         """First text record's value, or ``None``."""
-        for rec in self.records:
-            if rec.kind == "text":
-                return rec.value
-        return None
+        return self.first("text")
+
+    @property
+    def wifi(self):
+        """First Wi-Fi credential as a dict, or ``None``."""
+        return self.first("wifi")
+
+    @property
+    def contact(self):
+        """First contact card as a dict, or ``None``."""
+        return self.first("contact")
 
     def __repr__(self):
         return "<NDEFMessage %r>" % (self.records,)
@@ -536,6 +1024,26 @@ def _to_str(data):
         return "".join(chr(c) if 32 <= c < 127 else "." for c in data)
 
 
+#: Schemes worth treating as URIs that the prefix table has no code for.
+_BARE_URI_SCHEMES = ("sms:", "geo:")
+
+
+def _looks_like_uri(text):
+    """Does this string want to be a URI record rather than a text one?
+
+    ``://`` settles most of it. The rest is the schemes the prefix table
+    already knows, so ``tel:+1234`` and ``mailto:a@b.c`` stop being written as
+    prose while ``Note: buy milk`` still is.
+    """
+    if "://" in text:
+        return True
+    for prefix in _URI_PREFIXES + _BARE_URI_SCHEMES:
+        if prefix.endswith(":") and len(text) > len(prefix) \
+                and text.startswith(prefix):
+            return True
+    return False
+
+
 def _as_ndef_message(message):
     """Accept an :class:`NDEFMessage`, a record, or a plain string.
 
@@ -546,7 +1054,7 @@ def _as_ndef_message(message):
     if message is None or isinstance(message, NDEFMessage):
         return message
     if isinstance(message, str):
-        return NDEFMessage.from_uri(message) if "://" in message \
+        return NDEFMessage.from_uri(message) if _looks_like_uri(message) \
             else NDEFMessage.from_text(message)
     if isinstance(message, NDEFRecord):
         return NDEFMessage([message])
@@ -596,6 +1104,7 @@ def _ndef_to_tlv(message):
     else:
         head = bytes([0x03, 0xFF, (len(payload) >> 8) & 0xFF, len(payload) & 0xFF])
     return head + payload + b"\xfe"
+
 
 
 
