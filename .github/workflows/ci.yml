@@ -1,0 +1,26 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip pytest
+      # The driver runs against tests/fake_st25dv.py, a simulated chip, behind
+      # stubs for the CircuitPython-only modules; tests/test_device_suite.py
+      # runs the on-device suite here too, so CI fails if the board suite would.
+      - run: python -m pytest -q
+      - name: examples parse
+        run: python -m compileall -q examples st25dv.py test_st25dv.py

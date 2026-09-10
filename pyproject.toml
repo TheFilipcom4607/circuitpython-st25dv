@@ -1,0 +1,38 @@
+# Packaging metadata. Installing on a board is still "copy st25dv.py to
+# CIRCUITPY/lib/" -- this file exists so the module can be built and published
+# (a prerequisite for the CircuitPython Community Bundle) and so the host-side
+# test suite can be run from a checkout.
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "circuitpython-st25dv"
+version = "0.0.0+auto.0"
+description = "A CircuitPython driver for the ST ST25DV dual-interface NFC tag, with NDEF, the security session, areas, GPO and the mailbox"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.7"
+keywords = ["circuitpython", "nfc", "st25dv", "ndef", "rfid", "iso15693", "type5", "eeprom", "adafruit"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Embedded Systems",
+    "Topic :: System :: Hardware",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/TheFilipcom4607/circuitpython-st25dv"
+Issues = "https://github.com/TheFilipcom4607/circuitpython-st25dv/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.setuptools]
+py-modules = ["st25dv"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,12 @@
+__pycache__/
+*.mpy
+.venv/
+.DS_Store
+*.egg-info/
+build/
+bundles/
+.pytest_cache/
+# Vendor documentation. DS10925 (the ST25DV04K/16K/64K datasheet) and the
+# ST25DV-I2C software manual are 7 MB between them and are ST's to distribute;
+# the code cites them by document number and section instead.
+*.pdf

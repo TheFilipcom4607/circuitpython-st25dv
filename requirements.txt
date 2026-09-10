@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 TheFilipcom4607
+#
+# SPDX-License-Identifier: MIT
+#
+# The driver imports only CircuitPython core modules (micropython, supervisor,
+# time, and digitalio only when a GPO pin is passed), so there is nothing to
+# install. The file still has to exist: Adafruit's actions-ci install.sh runs
+# `pip install -r requirements.txt` unguarded, and the release build fails
+# without it.
