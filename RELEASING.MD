@@ -14,7 +14,7 @@ alone does nothing; the workflow fires on the release being *published*:
 git tag 1.0.0 && git push origin 1.0.0
 ```
 
-The workflow then attaches six assets:
+The workflow then attaches five assets:
 
 ```
 circuitpython-st25dv-py-1.0.0.zip           source, lib/st25dv.py
@@ -22,8 +22,13 @@ circuitpython-st25dv-9.x-mpy-1.0.0.zip      compiled for CircuitPython 9.x
 circuitpython-st25dv-10.x-mpy-1.0.0.zip     compiled for CircuitPython 10.x
 circuitpython-st25dv-examples-1.0.0.zip     examples/
 circuitpython-st25dv-1.0.0.json             bundle metadata for circup
-z-build_tools_version-*.ignore              which build-tools cut the release
 ```
+
+The build tools also stamp each release with a
+`z-build_tools_version-<version>.ignore` marker naming the toolchain that cut
+it. Nothing downstream reads it — the Community Bundle builds from the tagged
+source, `circup` wants the zips and the json — so a last step in the workflow
+deletes it and the release page stays clean.
 
 A second job then extracts the compiled module from those zips and attaches it
 as a bare `st25dv.mpy`, so the release page offers a file that can be dropped

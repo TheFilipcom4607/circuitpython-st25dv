@@ -81,3 +81,23 @@ jobs:
               done
             done
           fi
+
+      # circuitpython-build-tools stamps every release with a marker naming the
+      # build-tools version that cut it. Nothing downstream reads it - the
+      # Community Bundle builds from the tagged source, and circup wants the
+      # zips and the json - so it is clutter on the release page. Drop it.
+      - name: Drop the build-tools marker asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # select() rather than grep: with pipefail set, a grep that matches
+          # nothing would fail the step on a release that has no marker.
+          gh release view "$TAG" --repo "$REPO" --json assets -q \
+            '.assets[].name | select(startswith("z-build_tools_version-"))' \
+            | while read -r asset; do
+                echo "removing $asset"
+                gh release delete-asset "$TAG" "$asset" --repo "$REPO" --yes
+              done
