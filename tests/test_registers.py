@@ -2,8 +2,9 @@
 import pytest
 
 from fake_st25dv import FakeST25DV
-from st25dv import (Events, GPO_FIELD_CHANGE, GPO_RF_WRITE, IT_FIELD_RISING,
-                    IT_RF_WRITE, SessionRequired, ST25DV)
+from st25dv import (EH_FIELD_ON, Events, GPO_FIELD_CHANGE, GPO_RF_WRITE,
+                    IT_FIELD_RISING, IT_RF_PUT_MSG, IT_RF_WRITE,
+                    SessionRequired, ST25DV)
 
 
 @pytest.fixture
@@ -286,3 +287,61 @@ def test_wait_for_rf_write_sees_a_reader_writing(chip, tag):
     tag.format()
     chip.rf_write(8, b"\x03\x0bhello there")
     assert tag.wait_for_rf_write(timeout=1).rf_write
+
+
+# -- waiting on events ------------------------------------------------------
+
+def test_a_wait_reports_an_event_that_latched_before_the_call(chip, tag):
+    """IT_STS_Dyn latches until read, so a tap that already happened satisfies
+    the very first poll. Right for "did a reader visit", surprising for
+    "wait for the next one"."""
+    chip.dynamic[0x05] = IT_FIELD_RISING           # a field came and went
+    events = tag.wait_for_field(timeout=0)
+    assert events is not None
+    assert events.field_rising
+
+
+def test_drain_makes_a_wait_ignore_what_already_latched(chip, tag):
+    chip.dynamic[0x05] = IT_FIELD_RISING
+    assert tag.wait_for_field(timeout=0, drain=True) is None
+    assert chip.dynamic[0x05] == 0, "the drain read should have cleared it"
+
+
+def test_drain_still_sees_an_event_that_arrives_during_the_wait():
+    """Draining must not blind the wait to what it is actually waiting for."""
+
+    class LatchesLater(FakeST25DV):
+        """A phone that turns up on the third read of IT_STS_Dyn."""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.status_reads = 0
+
+        def _read_dynamic(self, addr, length):
+            if addr == 0x2005:
+                self.status_reads += 1
+                if self.status_reads > 2:
+                    self.dynamic[0x05] |= IT_FIELD_RISING
+            return super()._read_dynamic(addr, length)
+
+    chip = LatchesLater(2048)
+    chip.dynamic[0x05] = IT_FIELD_RISING          # stale, must be discarded
+    tag = ST25DV(chip)
+    events = tag.wait_for_field(timeout=5, interval=0, drain=True)
+    assert events is not None and events.field_rising
+    assert chip.status_reads > 2, "it returned before the new event arrived"
+
+
+def test_drain_does_not_hide_a_field_resting_on_the_tag(chip, tag):
+    """That comes from EH_CTRL_Dyn, not the latch, so draining cannot lose it."""
+    chip.dynamic[0x05] = 0
+    chip.dynamic[0x02] |= EH_FIELD_ON
+    events = tag.wait_for_field(timeout=0, drain=True)
+    assert events is not None and events.field_rising
+
+
+def test_rf_write_and_mailbox_waits_take_drain_too(chip, tag):
+    chip.dynamic[0x05] = IT_RF_WRITE | IT_RF_PUT_MSG
+    assert tag.wait_for_rf_write(timeout=0, drain=True) is None
+    chip.dynamic[0x05] = IT_RF_WRITE | IT_RF_PUT_MSG
+    assert tag.wait_for_mailbox(timeout=0, drain=True) is None

@@ -252,10 +252,10 @@ tag.ndef = NDEFRecord.homekit("X-HM://0024K0M6P00HB")
 | `tel(number)` | URI, prefix code 5 | offers to call |
 | `sms(number, body)` | URI, body percent-encoded | opens the composer, prefilled |
 | `email(address, subject, body)` | URI, prefix code 6 | opens the mail composer, prefilled |
-| `wifi(ssid, password, ...)` | MIME `application/vnd.wfa.wsc` | Android offers to join |
-| `contact(name, phone=, email=, ...)` | MIME `text/vcard`, vCard 3.0 | offers to save the contact |
+| `wifi(ssid, password, ...)` | MIME `application/vnd.wfa.wsc` | Android offers to join, iOS ignores it |
+| `contact(name, phone=, email=, ...)` | MIME `text/vcard`, vCard 3.0 | Android offers to save it, iOS ignores vCard entirely |
 | `bluetooth(address, name=)` | MIME `application/vnd.bluetooth.ep.oob` | offers to pair, BR/EDR |
-| `bluetooth_le(address, ...)` | MIME `application/vnd.bluetooth.le.oob` | offers to pair, LE |
+| `bluetooth_le(address, ...)` | MIME `application/vnd.bluetooth.le.oob` | neither phone acted on it |
 | `homekit(payload)` | URI, `X-HM://` | see the caveat below |
 
 Reading is symmetric. `record.kind` grows the values `"wifi"`, `"contact"`,
@@ -339,6 +339,22 @@ tag.areas
 
 ### Live RF status
 
+`IT_STS_Dyn` is read-to-clear, so a wait reports whatever latched since the
+register was last read, which can be older than the call. That is right for
+"did a reader visit" and wrong for "wait for the next visitor". Pass
+`drain=True` for the second:
+
+```python
+if tag.wait_for_field(timeout=30, drain=True):
+    print("a phone arrived just now")
+```
+
+A field already resting on the tag still counts either way, because that is
+read from `EH_CTRL_Dyn` rather than from the latch. Note also that the wait
+itself consumes the flags: they live in the object it returns, so keep it
+rather than polling again afterwards.
+
+
 This is what makes the library useful with only the STEMMA QT cable attached.
 
 | | |
@@ -421,7 +437,9 @@ rechecked.
   eight zero bytes. Success shows up in `I2C_SSO_Dyn` at 0x2004.
 * **Memory size must be read.** `IC_REF` is 0x26 for both the 16K and the 64K
   (Table 83). Capacity is `(MEM_SIZE + 1) * (BLK_SIZE + 1)`.
-* **`IT_STS_Dyn` is read-to-clear** (section 5.2.3).
+* **`IT_STS_Dyn` is read-to-clear** (section 5.2.3), and only reports events
+  enabled in the static `GPO` mask. The factory mask is field changes only, so
+  `wait_for_rf_write()` cannot fire until `GPO_RF_WRITE` is set.
 * **GPO output needs the dynamic bit.** The pin is driven only when bit 7 of
   `GPO_CTRL_Dyn` is set (Table 33). Over I2C bits 0 to 6 of that register are
   read only; the event mask lives in the static `GPO` register.
@@ -461,8 +479,9 @@ or 0xE2.
 ## Known limitations
 
 * **GPO pin electrical behaviour is not exercised.** The register configuration
-  is, over I2C; the pin was never jumpered. Pulse width, polarity and open-drain
-  behaviour are implemented from the datasheet and unverified.
+  is, over I2C, including that the event mask gates `IT_STS_Dyn`; but the pin
+  itself was never jumpered. Pulse width, polarity and open-drain behaviour are
+  implemented from the datasheet and unverified.
 * **RF-side mailbox delivery is not exercised.** It needs a reader that speaks
   the ST25DV custom commands. A phone will not do it. The host side of the
   mailbox is fully reachable over I2C.
@@ -481,84 +500,100 @@ or 0xE2.
   Bluetooth are handled by both. The `X-HM://`
   HomeKit payload is written correctly but has nothing behind it to pair with,
   which is a property of NFC HomeKit pairing rather than of this driver.
-* **The credential builders are verified byte for byte, not end to end.**
-  Every record is checked against its own format's rules and read back through
-  the same decoder a tag's contents go through, on the host and on the
-  firmware. None has yet been put in front of a phone.
+* **Bluetooth LE pairing records are not acted on by either phone tested.**
+  The bytes are well formed and decode correctly, but neither a Pixel 10 nor an
+  iPhone raised anything, on a phone that had just handled a classic Bluetooth
+  record correctly. Classic BR/EDR works; treat LE as write-only for now.
 * **`LOCK_CCFILE` and `LOCK_CFG` are one-way from the RF side.** The driver
   will happily set them. Setting `lock_ccfile` blocks RF writes to blocks 0 and
   1 permanently.
 
 ## Verified on hardware
 
-**Steps 1 and 2, on an Adafruit Feather RP2350 running CircuitPython 10.3.0.**
-The read-only paths are confirmed on silicon; nothing has yet written to the
-tag over I2C or been read by a phone, and the RF side is entirely unexercised.
+**All six checklist steps pass.** Tested on an Adafruit Feather RP2350 running
+CircuitPython 10.3.0, against a Pixel 10, an iPhone 16 Pro and a Flipper Zero.
 
 The part is an **ST25DV16K-IE**, 2048 bytes, settled from `MEM_SIZE` rather
-than from `IC_REF`, which reads 0x26 on the 16K and the 64K alike. The board
-under test had already been formatted and written, so these are not factory
-values:
+than `IC_REF`, which reads 0x26 on the 16K and the 64K alike. A Flipper Zero
+independently reads it as ISO 15693 with UID `E0 02 26 01 D9 71 91 69`, which
+matches what the driver reports after reversing the least-significant-byte-first
+order it comes off the chip in.
 
+| Step | Result |
+|---|---|
+| 1. Probe, read only | identity, system area, areas and the extended container all decode |
+| 2. On-device suite | 126 assertions, 0 failures, on the firmware |
+| 3. Phone reads it | notification and link open, for a 17-byte and a 607-byte message |
+| 4. Phone writes it | `wait_for_rf_write` fires, and an 83-byte foreign text record decodes |
+| 5. Mailbox | full host-side round trip, and everything guarding it |
+| 6. Restore | system area, container, message and area map byte-identical afterwards |
+
+**Step 3** covers more than a short URL. A 607-byte message exercises the
+three-byte TLV length form and the four-byte record payload length at once, and
+at that size it only fits because the container was corrected: the factory one
+declared 512 bytes. RF field detection was reliable across dozens of taps,
+catching both the two-edge case and the field-still-present case.
+
+**Step 4** needed `GPO_RF_WRITE` enabled first. See the note below, which is
+the main thing this round of testing turned up. Once enabled, a message written
+by NFC Tools on a phone decoded correctly, including the text record's language
+field, which is an independent check on the parser against a foreign encoder.
+
+**Step 5** exercised far more than the mailbox: the security session opened
+with the factory password, a system register written through it, the mailbox
+state machine, `MB_LEN_Dyn` reporting 64 rather than 63 for a 64-byte message,
+EEPROM writes refused while fast transfer mode is on and working again after,
+and the session closing cleanly.
+
+### The event mask gates the status register, not just the pin
+
+`IT_STS_Dyn` "cumulates all events which generate interruptions", and RF events
+reach it only "when enabled" in the static `GPO` register (Table 32's notes).
+`GPO_ENABLE`, bit 7, controls the physical output alone. An event whose bit is
+clear in the mask is reported **nowhere**, so `poll_events()` never sees it.
+
+The factory mask is `0x88`, `GPO_ENABLE | GPO_FIELD_CHANGE`. Field changes work
+out of the box; nothing else does. So on an untouched tag `wait_for_rf_write()`
+and `wait_for_mailbox()` wait forever and look broken:
+
+```python
+tag.open_session()
+tag.gpo |= GPO_RF_WRITE        # now wait_for_rf_write() can fire
 ```
-part          ST25DV16K-IE
-memory        2048 bytes (512 blocks of 4)
-uid           e0:02:26:01:d9:71:91:69
-ic_ref        0x26        ic_revision  0x13
-areas         (<Area 1 0x0000..0x07ff (2048 bytes)>,)
-field / vcc   False / True
-session open  False
 
-system area, 0x0000 to 0x0020
-  0000  88 03 01 00 00 3f 00 3f
-  0008  00 3f 00 00 00 00 07 00
-  0010  00 00 00 00 ff 01 03 26
-  0018  69 91 71 d9 01 26 02 e0
-  0020  13
+This was confirmed by changing that one bit and nothing else: the same phone
+doing the same write went from never firing the event to firing it at once.
 
-capability container  <CapabilityContainer v1.0 2040 bytes at offset 8>
-  raw                 e2 40 00 05 00 00 00 ff
-ndef                  uri: 'https://thefilip.com'
-```
+### What a phone does with a credential record
 
-What that run establishes, beyond the chip answering at all: `MEM_SIZE` and
-`BLK_SIZE` decode to the right capacity; the UID comes back least significant
-byte first and reverses to the `e0:02` an ST tag should show; UID byte 5 reads
-0x26, so the package variant is correctly called -IE; all three `ENDAi` sit at
-0x3f, which is end of memory on a 2048-byte part, and the driver reports the
-single factory area that implies; and the **extended** 8-byte capability
-container parses, with the NDEF message found at offset 8 and its URI prefix
-code expanded. The extended form is the one the 16K needs and the one a 4-byte
-container would get wrong.
+Every record is verified byte for byte over I2C. What a handset then does with
+it is the handset's business, and it varies:
 
-The on-device suite then ran **126 assertions, 0 failures**, on the firmware
-rather than on the host. That is the check that CPython cannot stand in for,
-and it covers the credential builders too: the dict handling, string methods
-and byte assembly they need all work on CircuitPython 10.3.0.
+| Record | Pixel 10 | iPhone 16 Pro |
+|---|---|---|
+| URL | opens it | opens it |
+| `tel:` | dialler, prefilled | inconclusive |
+| `sms:` | composer, body and punctuation intact | inconclusive |
+| `mailto:` | composer, subject and body intact | inconclusive |
+| Contact vCard | saves it, every field | ignored, Apple does not support vCard from a tag |
+| Wi-Fi | offers to join, names the network | ignored, Wi-Fi over NFC is Android only |
+| Bluetooth | offers to pair, names the device | inconclusive |
+| Bluetooth LE | nothing, though the bytes are well formed | inconclusive |
+| HomeKit `X-HM://` | not applicable | untested, and see the caveat above |
 
-What that run does **not** cover is a phone. Every record type above is
-verified as bytes, on both the host and the firmware, and none has been put in
-front of a handset.
+**Both phones deduplicate.** Re-presenting content a phone has already read is
+the fastest way to get a false negative, and it cost a long stretch of this
+session before we noticed. On the iPhone it eventually suppressed even a plain
+URL, which is why several rows read inconclusive rather than failed. If you test
+this yourself, **use unique content for every single tap**.
 
-Still to do, in order:
-
-3. **Phone reads it.** `examples/write_url.py --until wrote`, then tap an Android phone.
-   Then a message over 255 bytes, to exercise the three-byte TLV length, and
-   one over 512 bytes, to check the container fix.
-4. **Phone writes it.** `examples/phone_writes_back.py`, write from the phone,
-   confirm `wait_for_rf_write` fires and the board reads it back.
-5. **Mailbox.** `examples/mailbox_echo.py`, host-side put and get.
-6. **Restore.** Put the register values back and rewrite the URL, so the board
-   ends where it started.
-
-Steps 3 and 4 need a person with a phone. Step 5 is automatable. Note that all
-four write to the tag, and there is no reset command — keep the system-area
-dump above.
+Bluetooth LE is a real negative rather than an artefact: it was tested with
+fresh content on a phone that had just handled classic Bluetooth correctly.
 
 ## Tests and tooling
 
 ```bash
-python -m pytest -q                          # 188 tests against a simulated chip
+python -m pytest -q                          # 193 tests against a simulated chip
 python tools/run_on_board.py test_st25dv.py  # the same logic, on CircuitPython
 python tools/minify.py st25dv.py small.py     # strip docstrings for tight boards
 ```

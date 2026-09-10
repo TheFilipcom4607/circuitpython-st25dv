@@ -2379,11 +2379,25 @@ class ST25DV:
 
     @property
     def gpo(self):
-        """The static ``GPO`` register: which events pulse the pin (Table 26).
+        """The static ``GPO`` register: which events are reported (Table 26).
 
         Or it with the ``GPO_*`` constants. Writing needs the session. The
         constructor's ``gpo`` argument is the pin, and lives on as
         :attr:`gpo_pin`; this is the event mask.
+
+        **This gates IT_STS_Dyn, not just the pin.** The register "cumulates
+        all events which generate interruptions", and RF events reach it only
+        "when enabled" here (Table 32's notes). Bit 7, ``GPO_ENABLE``, controls
+        the physical output alone; disabling it still leaves events reported.
+        But an event whose bit is clear in this mask is reported nowhere at
+        all, so :meth:`poll_events` never sees it and the matching
+        :meth:`wait_for_rf_write` or :meth:`wait_for_mailbox` waits forever.
+
+        The factory value is 0x88, ``GPO_ENABLE | GPO_FIELD_CHANGE``, so field
+        changes work out of the box and nothing else does::
+
+            tag.open_session()
+            tag.gpo |= GPO_RF_WRITE       # now wait_for_rf_write() can fire
         """
         return self._sys(REG_GPO)
 
@@ -2574,17 +2588,28 @@ class ST25DV:
         Reading the register clears it (section 5.2.3), so this is the only
         place in the driver that touches 0x2005, and calling it twice loses
         whatever arrived before the first call. Keep the returned object.
+
+        Only events enabled in the static :attr:`gpo` mask appear here. On a
+        factory tag that is field changes and nothing else, so an event you
+        never see may simply be switched off rather than absent.
         """
         return Events(self._dyn(REG_IT_STS_DYN))
 
-    def _wait_for(self, mask, timeout, interval, extra_field=False):
+    def _wait_for(self, mask, timeout, interval, extra_field=False,
+                  drain=False):
         """Poll IT_STS_Dyn until any bit in ``mask`` has been seen.
 
         Events are accumulated rather than replaced, so a field-rising that
         arrives while waiting for an RF write is still in the object that comes
         back instead of being silently eaten by an intermediate read.
+
+        The first poll reports whatever had latched since the register was last
+        read, which may be older than this call. See the note on
+        :meth:`wait_for_field`.
         """
         deadline = _deadline(timeout)
+        if drain:
+            self.poll_events()          # discard whatever already latched
         seen = 0
         while True:
             seen |= self.poll_events().raw
@@ -2596,24 +2621,58 @@ class ST25DV:
                 return None
             sleep(interval)
 
-    def wait_for_field(self, timeout=10, interval=0.01):
+    def wait_for_field(self, timeout=10, interval=0.01, drain=False):
         """Wait for a reader's field. Returns the events seen, or ``None``.
 
         Both a FIELD_RISING event and a field that is already present count, so
         a phone held on the tag before the call still registers. In that second
         case FIELD_RISING is set in the returned object to say why it matched.
+
+        **This can return an event older than the call.** IT_STS_Dyn latches
+        until something reads it, so a phone that came and went at any point
+        since the last :meth:`poll_events` still satisfies the very first poll,
+        and the wait returns at once for a tap that already happened. That is
+        the right behaviour for "did a reader visit", and the wrong one for
+        "wait for the next visitor". For the second, drain first::
+
+            tag.poll_events()                  # discard what already latched
+            if tag.wait_for_field(timeout=30):
+                print("a phone arrived just now")
+
+        ``drain=True`` does that first read for you, so only a field arriving
+        after the call counts. A field already resting on the tag still counts
+        either way, because that is read from EH_CTRL_Dyn rather than from the
+        latch.
+
+        Worth knowing when testing by hand: without it, a stale tap looks like
+        a fresh one, which is a confusing way to lose an afternoon.
         """
         return self._wait_for(IT_FIELD_RISING, timeout, interval,
-                              extra_field=True)
+                              extra_field=True, drain=drain)
 
-    def wait_for_rf_write(self, timeout=10, interval=0.01):
+    def wait_for_rf_write(self, timeout=10, interval=0.01, drain=False):
         """Wait for a reader to write EEPROM. Returns the events, or ``None``.
 
         This is the "a phone just changed the tag" signal: read the NDEF back
-        afterwards to see what it wrote.
-        """
-        return self._wait_for(IT_RF_WRITE, timeout, interval)
+        afterwards to see what it wrote. Drain with :meth:`poll_events` first
+        if only a write from now on should count, or pass ``drain=True``; see
+        :meth:`wait_for_field`.
 
-    def wait_for_mailbox(self, timeout=10, interval=0.01):
-        """Wait for a reader to put a mailbox message. Returns events or None."""
-        return self._wait_for(IT_RF_PUT_MSG, timeout, interval)
+        **Needs GPO_RF_WRITE enabled first**, or it can never fire: the factory
+        GPO mask reports field changes only. See :attr:`gpo`::
+
+            tag.open_session()
+            tag.gpo |= GPO_RF_WRITE
+        """
+        return self._wait_for(IT_RF_WRITE, timeout, interval, drain=drain)
+
+    def wait_for_mailbox(self, timeout=10, interval=0.01, drain=False):
+        """Wait for a reader to put a mailbox message. Returns events or None.
+
+        Drain with :meth:`poll_events` first if only a message from now on
+        should count, or pass ``drain=True``; see :meth:`wait_for_field`.
+
+        **Needs GPO_RF_PUT_MSG enabled first**, the same way
+        :meth:`wait_for_rf_write` needs GPO_RF_WRITE. See :attr:`gpo`.
+        """
+        return self._wait_for(IT_RF_PUT_MSG, timeout, interval, drain=drain)
