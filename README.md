@@ -55,7 +55,6 @@ With [circup](https://github.com/adafruit/circup), which fetches the compiled
 build from this repo's latest release:
 
 ```bash
-circup bundle-add TheFilipcom4607/circuitpython-st25dv   # one time
 circup install st25dv
 ```
 
