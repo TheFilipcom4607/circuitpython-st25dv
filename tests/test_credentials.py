@@ -64,6 +64,47 @@ def test_a_tel_string_assigned_to_the_tag_is_stored_as_a_uri(tag):
     assert tag.ndef.uri == "tel:+441632960961"
 
 
+# -- email ------------------------------------------------------------------
+
+def test_email_builds_a_mailto_uri_with_the_right_prefix_code():
+    rec = NDEFRecord.email("grace@example.com")
+    assert rec.kind == "uri"
+    assert rec.payload[0] == 6, "mailto: is prefix code 6"
+    assert rec.value == "mailto:grace@example.com"
+
+
+def test_email_does_not_encode_the_address_itself():
+    """@ and . are legal in a mailto: address; encoding them helps nobody."""
+    assert "@" in NDEFRecord.email("grace@example.com").value
+
+
+def test_email_percent_encodes_subject_and_body():
+    rec = NDEFRecord.email("a@b.c", "Hello there", "see you at 6")
+    assert rec.value == ("mailto:a@b.c?subject=Hello%20there"
+                         "&body=see%20you%20at%206")
+
+
+def test_email_takes_either_half_of_the_query_alone():
+    assert NDEFRecord.email("a@b.c", subject="Hi").value == \
+        "mailto:a@b.c?subject=Hi"
+    assert NDEFRecord.email("a@b.c", body="Hi").value == \
+        "mailto:a@b.c?body=Hi"
+
+
+def test_email_scheme_is_not_doubled():
+    assert NDEFRecord.email("mailto:a@b.c").value == "mailto:a@b.c"
+
+
+def test_email_round_trips_through_the_tag(tag):
+    rec = roundtrip(tag, NDEFRecord.email("grace@example.com", "Hi"))
+    assert rec.value == "mailto:grace@example.com?subject=Hi"
+
+
+def test_a_mailto_string_assigned_to_the_tag_is_stored_as_a_uri(tag):
+    tag.ndef = "mailto:grace@example.com"
+    assert tag.ndef.uri == "mailto:grace@example.com"
+
+
 # -- Wi-Fi ------------------------------------------------------------------
 
 def wsc_fields(record):

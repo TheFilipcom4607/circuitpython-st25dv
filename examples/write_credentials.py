@@ -23,6 +23,7 @@ SPEAKER = "a4:c1:38:01:02:03"
 records = [
     ("phone number", NDEFRecord.tel(PHONE)),
     ("text message", NDEFRecord.sms(PHONE, "on my way")),
+    ("email", NDEFRecord.email("grace@example.com", "Hello", "see you at 6")),
     ("wi-fi", NDEFRecord.wifi(WIFI_SSID, WIFI_PASSWORD)),
     ("contact", NDEFRecord.contact("Grace Hopper", phone=PHONE,
                                    email="grace@example.com",

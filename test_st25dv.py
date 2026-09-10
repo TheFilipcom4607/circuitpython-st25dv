@@ -288,6 +288,13 @@ check("tel scheme not doubled", NDEFRecord.tel("tel:+1").value, "tel:+1")
 check("sms body encoded", NDEFRecord.sms("+1", "on my way!").value,
       "sms:+1?body=on%20my%20way%21")
 
+mail = NDEFRecord.email("grace@example.com", "Hello there")
+check("mailto prefix code", mail.payload[0], 6)
+check("mailto value", mail.value,
+      "mailto:grace@example.com?subject=Hello%20there")
+check("mailto scheme not doubled", NDEFRecord.email("mailto:a@b.c").value,
+      "mailto:a@b.c")
+
 wifi = NDEFRecord.wifi("Guest Wi-Fi", "correct horse")
 check("wifi kind", wifi.kind, "wifi")
 check("wifi mime", bytes(wifi.type), b"application/vnd.wfa.wsc")

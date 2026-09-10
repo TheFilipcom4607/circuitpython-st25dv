@@ -238,6 +238,7 @@ to do with, and reading one back decodes it in the same terms.
 ```python
 tag.ndef = NDEFRecord.tel("+441632960961")            # opens the dialler
 tag.ndef = NDEFRecord.sms("+441632960961", "on my way")
+tag.ndef = NDEFRecord.email("grace@example.com", "Hello", "see you at 6")
 tag.ndef = NDEFRecord.wifi("Guest Wi-Fi", "correct horse")
 tag.ndef = NDEFRecord.contact("Grace Hopper", phone="+441632960961",
                               email="grace@example.com")
@@ -250,6 +251,7 @@ tag.ndef = NDEFRecord.homekit("X-HM://0024K0M6P00HB")
 |---|---|---|
 | `tel(number)` | URI, prefix code 5 | offers to call |
 | `sms(number, body)` | URI, body percent-encoded | opens the composer, prefilled |
+| `email(address, subject, body)` | URI, prefix code 6 | opens the mail composer, prefilled |
 | `wifi(ssid, password, ...)` | MIME `application/vnd.wfa.wsc` | Android offers to join |
 | `contact(name, phone=, email=, ...)` | MIME `text/vcard`, vCard 3.0 | offers to save the contact |
 | `bluetooth(address, name=)` | MIME `application/vnd.bluetooth.ep.oob` | offers to pair, BR/EDR |
@@ -516,7 +518,7 @@ container parses, with the NDEF message found at offset 8 and its URI prefix
 code expanded. The extended form is the one the 16K needs and the one a 4-byte
 container would get wrong.
 
-The on-device suite then ran **123 assertions, 0 failures**, on the firmware
+The on-device suite then ran **126 assertions, 0 failures**, on the firmware
 rather than on the host. That is the check that CPython cannot stand in for,
 and it covers the credential builders too: the dict handling, string methods
 and byte assembly they need all work on CircuitPython 10.3.0.
@@ -543,7 +545,7 @@ dump above.
 ## Tests and tooling
 
 ```bash
-python -m pytest -q                          # 180 tests against a simulated chip
+python -m pytest -q                          # 187 tests against a simulated chip
 python tools/run_on_board.py test_st25dv.py  # the same logic, on CircuitPython
 python tools/minify.py st25dv.py small.py     # strip docstrings for tight boards
 ```

@@ -825,6 +825,28 @@ class NDEFRecord:
         return cls.uri(uri)
 
     @classmethod
+    def email(cls, address, subject="", body=""):
+        """An email, as a ``mailto:`` URI, optionally prefilled.
+
+        Opens the mail composer addressed and typed. Subject and body are
+        percent-encoded; the address is left alone, since ``@`` and ``.`` are
+        legal there and encoding them helps nobody. ``mailto:`` is prefix
+        code 6, so the scheme costs a single byte.
+        """
+        address = str(address).strip()
+        if address.startswith("mailto:"):
+            address = address[7:]
+        uri = "mailto:" + address
+        query = []
+        if subject:
+            query.append("subject=" + _percent_encode(subject))
+        if body:
+            query.append("body=" + _percent_encode(body))
+        if query:
+            uri += "?" + "&".join(query)
+        return cls.uri(uri)
+
+    @classmethod
     def wifi(cls, ssid, password="", authentication=None, encryption=None,
              mac=None, network_index=1):
         """Wi-Fi credentials, in the Wi-Fi Simple Configuration format.
