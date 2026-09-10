@@ -63,6 +63,19 @@ def test_write_is_split_at_256_bytes(chip, tag):
     assert lengths == [256, 256, 256]
 
 
+def test_the_datasheet_worked_example_for_page_timing(chip, tag):
+    """Section 6.4.2: 256 bytes starting at 0x0002 spans 65 pages, tW x 65.
+
+    The datasheet picks a deliberately awkward example, and it doubles as
+    proof that an unaligned 256-byte write is allowed at all: the byte address
+    counter increments rather than wrapping inside an aligned buffer, so the
+    chunker in write() has no reason to split on 256-byte alignment.
+    """
+    chip.programmed.clear()
+    tag.write(0x0002, bytes(256))
+    assert chip.programmed == [65]
+
+
 def test_write_respects_page_timing(chip, tag):
     """tW is charged per 4-byte page touched, partial ones included, so a
     5-byte write starting at 2 costs two pages, not one."""

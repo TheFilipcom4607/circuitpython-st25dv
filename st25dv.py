@@ -1744,6 +1744,8 @@ class ST25DV:
 
         Program time is tW per 4-byte page touched, partial pages included
         (section 6.4.2), so it is charged from the addresses, not the length.
+        The datasheet works the same example: 256 bytes starting at 0x0002
+        spans 65 pages, and takes tW x 65.
         """
         pages = ((addr + len(data) - 1) // PAGE_SIZE) - (addr // PAGE_SIZE) + 1
         self._write_raw(dev, addr, data)
@@ -1934,6 +1936,13 @@ class ST25DV:
         takes; at area boundaries, which a sequential write may not cross
         (section 6.4.2); and never at page boundaries, which cost time but are
         not a limit.
+
+        Deliberately not split at 256-byte alignment. Many EEPROMs wrap the
+        address inside an aligned write buffer, so a 256-byte write starting
+        part way through one lands partly back at its start. This chip does
+        not: section 6.4.2 says the byte address counter simply increments,
+        and gives a 256-byte write starting at 0x0002 as a worked example. The
+        only two limits are the length and the area border.
         """
         data = bytes(data)
         self._check_range(addr, len(data))

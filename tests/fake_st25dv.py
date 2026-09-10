@@ -91,6 +91,9 @@ class FakeST25DV:
         self.rf_busy = False
         #: Transfers the chip stays silent for, per page programmed.
         self.write_busy_ticks = 1
+        #: Pages charged per program cycle, in order. Lets a test assert the
+        #: page arithmetic directly instead of inferring it from log length.
+        self.programmed = []
         #: Every transfer, as (kind, address, memory address, bytes).
         self.log = []
 
@@ -205,6 +208,7 @@ class FakeST25DV:
     def _program(self, addr, length):
         """Charge the write cycle: tW per page touched, partial ones included."""
         pages = ((addr + length - 1) // 4) - (addr // 4) + 1
+        self.programmed.append(pages)
         self._busy = pages * self.write_busy_ticks
 
     # -- reads -----------------------------------------------------------

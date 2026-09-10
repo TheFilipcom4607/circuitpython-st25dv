@@ -401,7 +401,15 @@ rechecked.
   NACK does not mean the device is absent or the write was refused.
 * **Writes take time and the chip goes silent.** Pages are 4 bytes, tW is 5 ms
   per page touched including partial ones, and the device does not respond at
-  all during the cycle (section 6.4.2). Standard ACK polling applies.
+  all during the cycle (section 6.4.2). Standard ACK polling applies. The
+  datasheet's own worked example is 256 bytes starting at 0x0002, which spans
+  65 pages and costs tW x 65; the driver computes the same 65, and a test
+  pins it.
+* **A sequential write does not roll over.** The byte address counter simply
+  increments (section 6.4.2), so an unaligned 256-byte write is fine, unlike
+  the aligned-buffer wraparound many EEPROMs have. The only two limits are the
+  256-byte length and the area border, and those are what the chunker splits
+  on.
 * **Writes transit the mailbox buffer.** Fast transfer mode must be off or the
   write is NACKed and does nothing (section 6.4, Caution).
 * **Sequential writes cannot cross an area boundary** (section 6.4.2), and
@@ -545,7 +553,7 @@ dump above.
 ## Tests and tooling
 
 ```bash
-python -m pytest -q                          # 187 tests against a simulated chip
+python -m pytest -q                          # 188 tests against a simulated chip
 python tools/run_on_board.py test_st25dv.py  # the same logic, on CircuitPython
 python tools/minify.py st25dv.py small.py     # strip docstrings for tight boards
 ```
